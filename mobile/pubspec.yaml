@@ -44,6 +44,7 @@ dependencies:
   pdf: ^3.13.1
   printing: ^5.15.1
   crypto: ^3.0.7
+  sqflite_common_ffi_web: ^1.2.0
 
 dev_dependencies:
   flutter_test:
