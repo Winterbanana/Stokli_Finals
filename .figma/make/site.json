@@ -1,0 +1,10 @@
+{
+  "description": "Manage and track equipment borrowing, returns, and penalties with role-based dashboards, QR code scanning, real-time analytics, and payment processing.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
