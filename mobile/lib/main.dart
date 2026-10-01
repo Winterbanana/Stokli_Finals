@@ -1,6 +1,5 @@
 import "dart:async";
 import "dart:convert";
-import "dart:io";
 
 import "package:flutter/material.dart";
 import "package:flutter/services.dart";
@@ -13,6 +12,7 @@ import "package:shared_preferences/shared_preferences.dart";
 
 import "api_exception.dart";
 import "api_client.dart";
+import "database_factory_setup.dart";
 import "help_support.dart";
 
 const _navy = Color(0xFF123B57);
@@ -21,6 +21,7 @@ const _background = Color(0xFFF2F5F9);
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await initializeDatabaseFactory();
   final api = await ApiClient.create();
   runApp(StokliApp(api: api));
 }
@@ -329,6 +330,67 @@ class _LoginScreenState extends State<LoginScreen> {
                                     setState(() => _role = value.first),
                               ),
                               const SizedBox(height: 16),
+                              if (widget.api.isWebDemo) ...[
+                                Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .secondaryContainer,
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      Text(
+                                        "PUBLIC WEB DEMO",
+                                        style: TextStyle(
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .onSecondaryContainer,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        "Demo changes are saved only in this browser.",
+                                        style: TextStyle(
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .onSecondaryContainer,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 10),
+                                      Wrap(
+                                        spacing: 8,
+                                        runSpacing: 8,
+                                        children: [
+                                          OutlinedButton(
+                                            onPressed: () => setState(() {
+                                              _role = "student";
+                                              _id.text = "STUDENT-001";
+                                              _password.text = "demo-student";
+                                            }),
+                                            child: const Text(
+                                              "Use Student demo",
+                                            ),
+                                          ),
+                                          OutlinedButton(
+                                            onPressed: () => setState(() {
+                                              _role = "admin";
+                                              _id.text = "ADMIN-001";
+                                              _password.text = "demo-admin";
+                                            }),
+                                            child: const Text("Use Admin demo"),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(height: 16),
+                              ],
                             ],
                             if (_registering) ...[
                               TextFormField(
@@ -694,6 +756,23 @@ class _HomeShellState extends State<HomeShell> {
     }
   }
 
+  Future<void> _resetWebDemoData() async {
+    if (!widget.api.isWebDemo) return;
+    final confirmed = await _confirm(
+      context,
+      "Reset this browser demo?",
+      "This restores the fictional demo records in this browser only. "
+          "It does not access or change MySQL data.",
+    );
+    if (!confirmed) return;
+    try {
+      await widget.api.resetWebDemoData();
+      await widget.onSignOut();
+    } on ApiException catch (error) {
+      if (mounted) _showMessage(context, error.message);
+    }
+  }
+
   Future<void> _resolveQueuedProfileConflict(ApiException syncError) async {
     try {
       final conflict = await widget.api.getPendingProfileConflict();
@@ -941,13 +1020,10 @@ class _HomeShellState extends State<HomeShell> {
     String? photoBase64;
     if (photo != null) {
       try {
-        photoBase64 = base64Encode(await File(photo!.path).readAsBytes());
-      } on FileSystemException catch (error) {
+        photoBase64 = base64Encode(await photo!.readAsBytes());
+      } on Exception catch (error) {
         if (mounted) {
-          _showMessage(
-            context,
-            "Could not read the selected photo: ${error.message}",
-          );
+          _showMessage(context, "Could not read the selected photo: $error");
         }
         return;
       }
@@ -1132,6 +1208,7 @@ class _HomeShellState extends State<HomeShell> {
       text: target["program_section"]?.toString() ?? "",
     );
     XFile? selectedPhoto;
+    Uint8List? selectedPhotoBytes;
     String status = target["account_status"]?.toString() ?? "active";
     bool removePhoto = false;
     try {
@@ -1155,8 +1232,8 @@ class _HomeShellState extends State<HomeShell> {
                               radius: 44,
                             )
                           : ClipOval(
-                              child: Image.file(
-                                File(selectedPhoto!.path),
+                              child: Image.memory(
+                                selectedPhotoBytes!,
                                 width: 88,
                                 height: 88,
                                 fit: BoxFit.cover,
@@ -1214,8 +1291,11 @@ class _HomeShellState extends State<HomeShell> {
                                 imageQuality: 78,
                               );
                               if (image != null && dialogContext.mounted) {
+                                final bytes = await image.readAsBytes();
+                                if (!dialogContext.mounted) return;
                                 setDialogState(() {
                                   selectedPhoto = image;
+                                  selectedPhotoBytes = bytes;
                                   removePhoto = false;
                                 });
                               }
@@ -1367,7 +1447,7 @@ class _HomeShellState extends State<HomeShell> {
         if (removePhoto) "remove_profile_photo": true,
       };
       if (selectedPhoto != null) {
-        final photoBytes = await selectedPhoto!.readAsBytes();
+        final photoBytes = selectedPhotoBytes!;
         if (!mounted) return;
         if (photoBytes.length > 1_572_864 || !_isProfileImage(photoBytes)) {
           _showMessage(
@@ -1433,9 +1513,9 @@ class _HomeShellState extends State<HomeShell> {
         } else if (mounted) {
           _showMessage(context, error.message);
         }
-      } on FileSystemException catch (error) {
+      } on Exception catch (error) {
         if (mounted) {
-          _showMessage(context, "Could not read photo: ${error.message}");
+          _showMessage(context, "Could not read photo: $error");
         }
       } finally {
         if (mounted) {
@@ -1802,27 +1882,38 @@ class _HomeShellState extends State<HomeShell> {
                     _adminNavigation(),
                     const SizedBox(height: 14),
                   ],
-                  if (widget.api.isOffline || _pendingSyncCount > 0) ...[
+                  if (widget.api.isWebDemo ||
+                      widget.api.isOffline ||
+                      _pendingSyncCount > 0) ...[
                     Card(
                       child: Padding(
                         padding: const EdgeInsets.all(14),
                         child: Row(
                           children: [
-                            const Icon(Icons.cloud_off_outlined, color: _blue),
+                            Icon(
+                              widget.api.isWebDemo
+                                  ? Icons.storage_outlined
+                                  : Icons.cloud_off_outlined,
+                              color: _blue,
+                            ),
                             const SizedBox(width: 10),
                             Expanded(
                               child: Text(
-                                widget.api.isOffline
+                                widget.api.isWebDemo
+                                    ? "Web Demo • saved in this browser. Never synced to MySQL."
+                                    : widget.api.isOffline
                                     ? "$_pendingSyncCount changes waiting to sync. Saved on this device."
                                     : "$_pendingSyncCount changes still need MySQL sync.",
                                 style: TextStyle(fontWeight: FontWeight.w600),
                               ),
                             ),
-                            const SizedBox(width: 8),
-                            TextButton(
-                              onPressed: _syncOfflineChanges,
-                              child: const Text("Sync"),
-                            ),
+                            if (!widget.api.isWebDemo) ...[
+                              const SizedBox(width: 8),
+                              TextButton(
+                                onPressed: _syncOfflineChanges,
+                                child: const Text("Sync"),
+                              ),
+                            ],
                           ],
                         ),
                       ),
@@ -1953,6 +2044,7 @@ class _HomeShellState extends State<HomeShell> {
     onEditProfile: () => _editProfile(),
     onHelp: _openHelp,
     onSync: _syncOfflineChanges,
+    onResetDemoData: _resetWebDemoData,
     onSignOut: widget.onSignOut,
     offline: widget.api.isOffline,
     pendingSyncCount: _pendingSyncCount,
@@ -2065,6 +2157,7 @@ class _HomeShellState extends State<HomeShell> {
     hasMore: _equipmentHasMore,
     categories: _equipmentCategories,
     offline: widget.api.isOffline,
+    isWebDemo: widget.api.isWebDemo,
     updating: _loading,
     isAdmin: false,
     loadPage:
@@ -2579,6 +2672,7 @@ class _HomeShellState extends State<HomeShell> {
     hasMore: _equipmentHasMore,
     categories: _equipmentCategories,
     offline: widget.api.isOffline,
+    isWebDemo: widget.api.isWebDemo,
     updating: _loading,
     isAdmin: true,
     loadPage:
@@ -3201,6 +3295,7 @@ class _SettingsPage extends StatefulWidget {
     required this.onEditProfile,
     required this.onHelp,
     required this.onSync,
+    required this.onResetDemoData,
     required this.onSignOut,
     required this.offline,
     required this.pendingSyncCount,
@@ -3215,6 +3310,7 @@ class _SettingsPage extends StatefulWidget {
   final VoidCallback onEditProfile;
   final VoidCallback onHelp;
   final VoidCallback onSync;
+  final Future<void> Function() onResetDemoData;
   final Future<void> Function() onSignOut;
   final bool offline;
   final int pendingSyncCount;
@@ -3433,12 +3529,16 @@ class _SettingsPageState extends State<_SettingsPage> {
                     widget.offline ? Icons.cloud_off_outlined : Icons.sync,
                   ),
                   title: Text(
-                    widget.offline
+                    widget.api.isWebDemo
+                        ? "Web Demo — saved in this browser"
+                        : widget.offline
                         ? "Offline — saved on this device"
                         : "${widget.pendingSyncCount} changes waiting to sync",
                   ),
                   subtitle: Text(
-                    widget.offline
+                    widget.api.isWebDemo
+                        ? "This demo uses browser storage only; it never connects to XAMPP or MySQL."
+                        : widget.offline
                         ? "Reconnect to the server to synchronize queued changes."
                         : "Queued changes are retained until synchronization succeeds.",
                   ),
@@ -3448,6 +3548,15 @@ class _SettingsPageState extends State<_SettingsPage> {
                           child: const Text("Sync now"),
                         )
                       : null,
+                ),
+              if (widget.api.isWebDemo)
+                ListTile(
+                  leading: const Icon(Icons.restart_alt),
+                  title: const Text("Reset demo data"),
+                  subtitle: const Text(
+                    "Restore the fictional starting records in this browser",
+                  ),
+                  onTap: widget.onResetDemoData,
                 ),
               ListTile(
                 leading: const Icon(Icons.logout),
@@ -3470,6 +3579,7 @@ class _InventoryView extends StatefulWidget {
     required this.hasMore,
     required this.categories,
     required this.offline,
+    required this.isWebDemo,
     required this.updating,
     required this.isAdmin,
     required this.loadPage,
@@ -3483,6 +3593,7 @@ class _InventoryView extends StatefulWidget {
   final bool hasMore;
   final List<String> categories;
   final bool offline;
+  final bool isWebDemo;
   final bool updating;
   final bool isAdmin;
   final Future<JsonMap> Function({
@@ -3677,8 +3788,10 @@ class _InventoryViewState extends State<_InventoryView> {
         ),
         const SizedBox(height: 12),
         if (_offline)
-          const _MessageBanner(
-            message: "Offline — showing locally synchronized inventory.",
+          _MessageBanner(
+            message: widget.isWebDemo
+                ? "Web Demo • browser-only inventory; not connected to MySQL."
+                : "Offline — showing locally synchronized inventory.",
             isError: false,
           )
         else

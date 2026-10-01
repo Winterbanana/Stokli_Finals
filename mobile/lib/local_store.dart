@@ -117,6 +117,28 @@ class LocalStore {
     await _seed(db);
   }
 
+  Future<void> resetDemoData() async {
+    final db = await _db;
+    await db.transaction((txn) async {
+      for (final table in [
+        "return_reports",
+        "inventory_exceptions",
+        "penalties",
+        "payments",
+        "borrowing_transactions",
+        "borrowing_requests",
+        "offline_outbox",
+        "remote_snapshots",
+        "system_logs",
+        "equipment",
+        "users",
+      ]) {
+        await txn.delete(table);
+      }
+      await _seed(txn);
+    });
+  }
+
   static Future<void> _createSchema(DatabaseExecutor db) async {
     await db.execute('''
       CREATE TABLE users (

@@ -1,9 +1,8 @@
 import "dart:async";
 import "dart:convert";
-import "dart:io";
 import "dart:math";
-import "dart:typed_data";
 
+import "package:flutter/foundation.dart";
 import "package:flutter_secure_storage/flutter_secure_storage.dart";
 import "package:http/http.dart" as http;
 import "package:shared_preferences/shared_preferences.dart";
@@ -51,7 +50,7 @@ class ApiClient {
   static const _serverTokenKey = "stokli_server_session_token";
   static const defaultEndpoint = String.fromEnvironment(
     "STOKLI_API_BASE_URL",
-    defaultValue: "http://10.0.2.2/Stokli%20BMC/api/index.php",
+    defaultValue: kIsWeb ? "" : "http://10.0.2.2/Stokli%20BMC/api/index.php",
   );
 
   final SharedPreferences _preferences;
@@ -70,7 +69,7 @@ class ApiClient {
   static Future<ApiClient> create() async {
     final preferences = await SharedPreferences.getInstance();
     final client = ApiClient._(preferences);
-    client._offlineMode = preferences.getBool(_offlineKey) ?? false;
+    client._offlineMode = kIsWeb || (preferences.getBool(_offlineKey) ?? false);
     client._token = await client._secureStorage.read(key: _tokenKey);
     client._serverToken = await client._secureStorage.read(
       key: _serverTokenKey,
@@ -81,6 +80,7 @@ class ApiClient {
   }
 
   bool get isOffline => _offlineMode;
+  bool get isWebDemo => kIsWeb;
   Future<int> get pendingSyncCount => localStore.pendingOperationCount();
 
   Future<JsonMap> getCachedEquipmentPage({int limit = 30}) =>
@@ -180,6 +180,9 @@ class ApiClient {
       "password": password,
     };
     if (_offlineMode) {
+      if (kIsWeb) {
+        return localStore.register(body);
+      }
       throw const ApiException(
         "Connect to the server before creating a new account.",
         statusCode: 503,
@@ -206,11 +209,30 @@ class ApiClient {
       }
     } finally {
       _token = null;
-      _offlineMode = false;
-      await _preferences.setBool(_offlineKey, false);
+      _offlineMode = kIsWeb;
+      await _preferences.setBool(_offlineKey, kIsWeb);
       await _preferences.remove(_offlineUserKey);
       await _secureStorage.delete(key: _tokenKey);
     }
+  }
+
+  Future<void> resetWebDemoData() async {
+    if (!kIsWeb) {
+      throw const ApiException(
+        "Reset demo data is only available in the public Web Demo.",
+        statusCode: 403,
+      );
+    }
+    await localStore.resetDemoData();
+    _token = null;
+    _serverToken = null;
+    _accountId = null;
+    _offlineMode = true;
+    await _preferences.setBool(_offlineKey, true);
+    await _preferences.remove(_offlineUserKey);
+    await _preferences.remove(_accountIdKey);
+    await _secureStorage.delete(key: _tokenKey);
+    await _secureStorage.delete(key: _serverTokenKey);
   }
 
   Future<JsonMap> get(String action) async {
@@ -465,6 +487,7 @@ class ApiClient {
     }
     if (action == "change_password") {
       if (_offlineMode) {
+        if (kIsWeb) return localStore.post(action, body, _token ?? "");
         throw const ApiException(
           "Internet connection required to change your password.",
           statusCode: 503,
@@ -557,6 +580,12 @@ class ApiClient {
     required String accountId,
     required String password,
   }) async {
+    if (kIsWeb) {
+      throw const ApiException(
+        "The public Web Demo uses browser storage and never connects to MySQL.",
+        statusCode: 503,
+      );
+    }
     final response = await _remoteRequest(
       "POST",
       "login",
@@ -677,13 +706,9 @@ class ApiClient {
         default:
           throw const ApiException("Unsupported API request.");
       }
-    } on SocketException {
-      throw const ApiException(
-        "Cannot reach the Stokli server. Check XAMPP, your network, and the server URL.",
-      );
     } on http.ClientException {
       throw const ApiException(
-        "The server connection failed. Check XAMPP and the server URL.",
+        "The server connection failed. Check your network and server URL.",
       );
     } on TimeoutException {
       throw const ApiException(
