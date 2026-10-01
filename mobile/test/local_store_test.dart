@@ -851,4 +851,32 @@ void main() {
     );
     expect(logs, hasLength(1));
   });
+
+  test(
+    "resets only the browser demo database and reseeds its sample data",
+    () async {
+      final student = await store.login({
+        "role": "student",
+        "account_id": "STUDENT-001",
+        "password": "demo-student",
+      });
+      final token = student["token"] as String;
+      await store.post("create_request", {"equipment_code": "STK-005"}, token);
+      expect(await store.pendingOperationCount(), 0);
+
+      await store.resetDemoData();
+
+      expect(await database.query("equipment"), hasLength(8));
+      expect(await database.query("users"), hasLength(8));
+      expect(await database.query("borrowing_requests"), hasLength(4));
+      expect(await database.query("borrowing_transactions"), hasLength(1));
+      expect(await database.query("payments"), isEmpty);
+      final reseededStudent = await store.login({
+        "role": "student",
+        "account_id": "STUDENT-001",
+        "password": "demo-student",
+      });
+      expect(reseededStudent["user"]["account_id"], "STUDENT-001");
+    },
+  );
 }
